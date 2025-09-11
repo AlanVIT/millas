@@ -132,7 +132,7 @@ async function renderAdminCanjes() {
         <table style="width:100%; border-collapse:collapse;">
           <thead>
             <tr style="text-align:left; border-bottom:1px solid #ddd;">
-              <th>Fecha</th><th>Email/UID</th><th>Premio</th><th style="text-align:right;">Millas</th><th style="text-align:right;">Acción</th>
+              <th>Fecha</th><th>Email/UID</th><th>Premio</th><th style="text-align:right;">Puntos</th><th style="text-align:right;">Acción</th>
             </tr>
           </thead>
           <tbody>${rowsPend || `<tr><td colspan="5"><i>No hay canjes pendientes.</i></td></tr>`}</tbody>
@@ -144,7 +144,7 @@ async function renderAdminCanjes() {
         <table style="width:100%; border-collapse:collapse;">
           <thead>
             <tr style="text-align:left; border-bottom:1px solid #ddd;">
-              <th>Fecha</th><th>Email/UID</th><th>Premio</th><th style="text-align:right;">Millas</th><th>Entregado</th><th style="text-align:right;">Acción</th>
+              <th>Fecha</th><th>Email/UID</th><th>Premio</th><th style="text-align:right;">Puntos</th><th>Entregado</th><th style="text-align:right;">Acción</th>
             </tr>
           </thead>
           <tbody>${rowsHist || `<tr><td colspan="6"><i>Sin historial.</i></td></tr>`}</tbody>
@@ -242,7 +242,7 @@ async function renderAdminUsuarios() {
     <div style="border:1px dashed #999; padding:12px; border-radius:10px; margin:12px 0;">
         <h3 style="margin:6px 0;">Carga masiva por archivo</h3>
         <p style="margin:0 0 8px 0; color:#555;">
-        Formato: Columna A = <b>email</b>, Columna B = <b>millas a sumar</b> (puede ser negativo).<br>
+        Formato: Columna A = <b>email</b>, Columna B = <b>Puntos a sumar</b> (puede ser negativo).<br>
         Acepta .xlsx (SheetJS) o .csv.
         </p>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -257,7 +257,7 @@ async function renderAdminUsuarios() {
     render(`
     <div class="container">
         <h2>Administrar Usuarios</h2>
-        <p style="margin-top:-4px;color:#555">Buscá por email y ajustá millas de usuarios (solo no-admin).</p>
+        <p style="margin-top:-4px;color:#555">Buscá por email y ajustá puntos de usuarios.</p>
 
         <!-- Buscador existente -->
         <input id="search-email" placeholder="Buscar por email (ej: @empresa.com)" style="flex:1;width:94%;">
@@ -335,7 +335,7 @@ async function renderAdminPremios() {
       <h2>Administrar Recompensas</h2>
 
       <input id="p-nombre" placeholder="Nombre del premio" style="flex:2;width:94%;">
-      <input id="p-valor" type="number" placeholder="Valor en millas" style="flex:1;width:94%;">
+      <input id="p-valor" type="number" placeholder="Valor en Puntos" style="flex:1;width:94%;">
       <div style="border:1px dashed #bbb; padding:12px; border-radius:10px; margin-bottom:12px; display:flex; gap:8px; align-items:center;">
         <button onclick="crearPremio()">Agregar</button>
       </div>
@@ -344,7 +344,7 @@ async function renderAdminPremios() {
         <thead>
           <tr style="text-align:left; border-bottom:1px solid #ddd;">
             <th>Nombre</th>
-            <th style="text-align:center;">Valor (millas)</th>
+            <th style="text-align:center;">Valor (Puntos)</th>
             <th style="text-align:right;">Acciones</th>
           </tr>
         </thead>
@@ -382,25 +382,47 @@ async function ajustarMillas(uidObjetivo) {
   const delta = parseInt(input.value, 10);
   if (isNaN(delta)) return alert("Ingresá un número válido (positivo o negativo).");
 
+  // seguridad: no admins
   const target = await db.collection("usuarios").doc(uidObjetivo).get();
   if (!target.exists) return alert("Usuario no encontrado");
   if (target.data().admin === true) return alert("No podés ajustar cuentas admin.");
 
   try {
-    await db.collection("movimientos").add({
-      empleado: uidObjetivo,
-      fecha: nowTs(),
-      concepto: "Ajuste por admin",
-      millas: delta
+    await db.runTransaction(async (tx) => {
+      const userRef = db.collection("usuarios").doc(uidObjetivo);
+      const snap = await tx.get(userRef);
+      const saldoActual = snap.data().saldo || 0;
+
+      // 1) movimiento
+      const movRef = db.collection("movimientos").doc();
+      tx.set(movRef, {
+        empleado: uidObjetivo,
+        fecha: tsToLocalString(nowTs()), // Timestamp (como venimos usando)
+        concepto: "Ajuste por admin",
+        millas: delta
+      });
+
+      // 2) actualizar saldo
+      tx.update(userRef, { saldo: saldoActual + delta });
     });
 
-    const saldoActual = target.data().saldo || 0;
-    await db.collection("usuarios").doc(uidObjetivo).update({ saldo: saldoActual + delta });
+    // ✅ UI instantáneo (sin recargar)
+    const saldoEl = document.getElementById(`saldo-${uidObjetivo}`);
+    if (saldoEl) {
+      const actual = parseInt(saldoEl.textContent, 10) || 0;
+      saldoEl.textContent = actual + delta;
+    }
 
-    await viewAdminMenu();
+    // ✅ Actualizá el caché de la lista si lo usás
+    if (window._usuariosCache?.length) {
+      const i = window._usuariosCache.findIndex(u => u.id === uidObjetivo);
+      if (i >= 0) window._usuariosCache[i].saldo = (window._usuariosCache[i].saldo || 0) + delta;
+    }
+
+    input.value = ""; // limpiar input
   } catch (e) {
     console.error(e);
-    alert("Error ajustando millas: " + (e.code || e.message));
+    alert("Error ajustando puntos: " + (e.code || e.message || e));
   }
 }
 
@@ -421,7 +443,7 @@ async function verMovs(uidObjetivo) {
   let html = "<h4>Movimientos</h4>";
   movsSnap.forEach(d=>{
     const m = d.data();
-    html += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> millas</p>`;
+    html += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> Puntos</p>`;
   });
   document.getElementById("movs-detalle").innerHTML = html || "<i>Sin movimientos</i>";
 }
@@ -432,7 +454,7 @@ async function editPremio(id, nombreActual, valorActual) {
     <div class="container">
       <h2>Editar Premio</h2>
       <input id="edit-nombre" value="${esc(nombreActual)}" placeholder="Nombre del premio">
-      <input id="edit-valor" type="number" value="${valorActual}" placeholder="Valor en millas">
+      <input id="edit-valor" type="number" value="${valorActual}" placeholder="Valor en puntos">
       <div style="display:flex; gap:8px; margin-top:12px;">
         <button onclick="guardarEdicionPremio('${id}')">Guardar</button>
         <button onclick="viewAdminMenu()">Cancelar</button>
@@ -446,7 +468,7 @@ function editPremio(id, nombreActual, valorActual) {
     <div class="container">
       <h2>Editar Premio</h2>
       <input id="edit-nombre" value="${(nombreActual || "").replace(/"/g,"&quot;")}" placeholder="Nombre del premio">
-      <input id="edit-valor" type="number" value="${valorActual}" placeholder="Valor en millas">
+      <input id="edit-valor" type="number" value="${valorActual}" placeholder="Valor en Puntos">
       <div style="display:flex; gap:8px; margin-top:12px;">
         <button onclick="guardarEdicionPremio('${id}')">Guardar</button>
         <button onclick="renderAdminPremios()">Cancelar</button>
@@ -495,7 +517,7 @@ function editUsuario(uid, email, saldoActual) {
           <input value="${saldoActual}" disabled>
         </label>
 
-        <label style="text-align:left;">Nuevo saldo (millas)
+        <label style="text-align:left;">Nuevo saldo (Puntos)
           <input id="nuevo-saldo" type="number" placeholder="Ej: 120">
         </label>
 
@@ -521,9 +543,9 @@ function userCard(u) {
     <div style="border:1px solid #ddd; padding:12px; margin:10px 0; border-radius:10px;">
       <div style="font-weight:600">${(u.email || "(sin email)")}</div>
       <div style="font-size:12px;color:#777">UID: ${u.id}</div>
-      <div>Saldo: <b>${u.saldo || 0}</b> millas</div>
+      <div>Saldo: <b id="saldo-${u.id}">${u.saldo || 0}</b> Puntos</div>
       <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-        <input id="adj-${u.id}" type="number" placeholder="Millas (+/-)" style="flex:1; min-width:160px;">
+        <input id="adj-${u.id}" type="number" placeholder="Puntos (+/-)" style="flex:1; min-width:160px;">
         <button onclick="ajustarMillas('${u.id}')">Aplicar</button>
         <button onclick="verMovs('${u.id}')">Movs</button>
         <button onclick="editUsuario('${u.id}', '${(u.email||"").replace(/'/g,"&#039;")}', ${u.saldo || 0})">Editar</button>
@@ -621,19 +643,19 @@ async function viewUser(uid) {
   let movsHTML = "";
   movsSnap.forEach(d=>{
     const m = d.data();
-    movsHTML += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> millas</p>`;
+    movsHTML += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> Puntos</p>`;
   });
 
   const premiosSnap = await db.collection("premios").orderBy("nombre").get();
   let options = "";
   premiosSnap.forEach(d=>{
     const p = d.data();
-    options += `<option value="${d.id}" data-valor="${p.valor}">${esc(p.nombre)} — ${p.valor} millas</option>`;
+    options += `<option value="${d.id}" data-valor="${p.valor}">${esc(p.nombre)} — ${p.valor} Puntos</option>`;
   });
 
   render(`
     <div class="container">
-      <h2>Extra Millas ZOOM</h2>
+      <h2>Extra puntos ZOOM</h2>
       <h1 id="saldo">Saldo: <b>${saldo}</b></h1>
       <div id="movimientos">${movsHTML || "<i>Sin movimientos</i>"}</div>
       <h3>Canjear Recompensas</h3>
@@ -695,7 +717,7 @@ async function canjear() {
   const userRef = db.collection("usuarios").doc(uid);
   const userSnap = await userRef.get();
   const saldo = userSnap.data()?.saldo ?? 0;
-  if (saldo < valor) return alert("Millas insuficientes.");
+  if (saldo < valor) return alert("Puntos insuficientes.");
 
   const hoy = new Date().toISOString().slice(0,10);
 
@@ -713,7 +735,7 @@ async function canjear() {
       const movRef = db.collection("movimientos").doc();
       tx.set(movRef, {
         empleado: uid,
-        fecha: nowTs(),
+        fecha: tsToLocalString(nowTs()),
         concepto: `Canje: ${premioNombre}`,
         millas: -valor
       });
@@ -726,7 +748,7 @@ async function canjear() {
         premioId,
         premioNombre,     // <-- ya garantizado string no vacío
         valor,
-        fecha: nowTs(),
+        fecha: tsToLocalString(nowTs()),
         estado: "pendiente",
         entregadoPor: null,
         entregadoAt: null
@@ -742,26 +764,34 @@ async function canjear() {
 }
 
 async function viewUserCanjear(uid) {
-  const userDoc = await db.collection("usuarios").doc(uid).get();
-  const saldo = userDoc.exists ? (userDoc.data().saldo || 0) : 0;
+
+  db.collection("usuarios").doc(uid).onSnapshot(snap => {
+    if (snap.exists) {
+      const saldo = snap.data().saldo || 0;
+      const saldoEl = document.getElementById("saldo");
+      if (saldoEl) saldoEl.innerHTML = "Saldo: <b>" + saldo + "</b>";
+    }
+  });
 
   let movsSnap;
   try {
-    movsSnap = await db.collection("movimientos")
+    db.collection("movimientos")
       .where("empleado","==",uid)
       .orderBy("fecha","desc")
-      .get();
+      .onSnapshot(snap => {
+        let movsHTML = "";
+        snap.forEach(d => {
+          const m = d.data();
+          movsHTML += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> Puntos</p>`;
+        });
+        const cont = document.getElementById("movimientos");
+        if (cont) cont.innerHTML = movsHTML || "<i>Sin movimientos</i>";
+      });
   } catch {
     movsSnap = await db.collection("movimientos")
       .where("empleado","==",uid)
       .get();
   }
-
-  let movsHTML = "";
-  movsSnap.forEach(d=>{
-    const m = d.data();
-    movsHTML += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> millas</p>`;
-  });
 
     const premiosSnap = await db.collection("premios").orderBy("nombre").get();
     let options = "";
@@ -769,7 +799,7 @@ async function viewUserCanjear(uid) {
     const p = d.data();
     const nombre = (p.nombre || "").replace(/"/g,"&quot;");
     options += `<option value="${d.id}" data-valor="${p.valor}" data-nombre="${nombre}">
-                    ${nombre} — ${p.valor} millas
+                    ${nombre} — ${p.valor} Puntos
                 </option>`;
     });
 
@@ -841,7 +871,7 @@ async function viewUserPendientes(uid) {
         <table style="width:100%; border-collapse:collapse;">
           <thead>
             <tr style="position:sticky; top:0; background:#fafafa; border-bottom:1px solid #ddd;">
-              <th>Fecha</th><th>Premio</th><th style="text-align:right;">Millas</th><th>Estado</th><th>Entregado</th>
+              <th>Fecha</th><th>Premio</th><th style="text-align:right;">Puntos</th><th>Estado</th><th>Entregado</th>
             </tr>
           </thead>
           <tbody>${pendientes || `<tr><td colspan="5"><i>Sin pendientes</i></td></tr>`}</tbody>
@@ -853,7 +883,7 @@ async function viewUserPendientes(uid) {
         <table style="width:100%; border-collapse:collapse;">
           <thead>
             <tr style="position:sticky; top:0; background:#fafafa; border-bottom:1px solid #ddd;">
-              <th>Fecha</th><th>Premio</th><th style="text-align:right;">Millas</th><th>Estado</th><th>Entregado</th>
+              <th>Fecha</th><th>Premio</th><th style="text-align:right;">Puntos</th><th>Estado</th><th>Entregado</th>
             </tr>
           </thead>
           <tbody>${historial || `<tr><td colspan="5"><i>Aún no tenés canjes entregados</i></td></tr>`}</tbody>
@@ -1050,7 +1080,7 @@ async function bulkApply() {
         const movRef = db.collection("movimientos").doc();
         batch.set(movRef, {
           empleado: uid,
-          fecha: nowTs(),
+          fecha: tsToLocalString(nowTs()),
           concepto: "Carga masiva (archivo)",
           millas: delta
         });
