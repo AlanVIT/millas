@@ -55,21 +55,54 @@ function viewRegister() {
 }
 
 // ========= Admin =========
-function viewAdminMenu() {
+async function viewAdminMenu() {
+  const uid = auth.currentUser.uid;
+  const userSnap = await db.collection("usuarios").doc(uid).get();
+  const data = userSnap.data() || {};
+  const recibir = !!data.recibirMailsCanjes;
+
   render(`
     <div class="container">
       <h2>Panel Admin</h2>
       <p>Elegí qué querés administrar:</p>
-      <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:16px 0;">
+
+      <div class="toolbar" style="justify-content:center; flex-wrap:wrap;">
         <button onclick="renderAdminUsuarios()">Administrar Usuarios</button>
         <button onclick="renderAdminPremios()">Administrar Recompensas</button>
-        <button onclick="renderAdminCanjes()">Canjes pendientes</button>   <!-- NUEVO -->
+        <button onclick="renderAdminCanjes()">Canjes pendientes</button>
       </div>
+
       <hr>
-      <button onclick="logout()">Cerrar sesión</button>
+
+      <div style="text-align:center; margin-top:16px;">
+        <label style="display:inline-flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="chk-mails" ${recibir ? "checked" : ""} />
+          <span>Recibir mails en los canjes</span>
+        </label>
+      </div>
+
+      <div style="text-align:center; margin-top:20px;">
+        <button onclick="logout()">Cerrar sesión</button>
+      </div>
     </div>
   `);
+
+  // handler para cambios
+  const chk = document.getElementById("chk-mails");
+  chk.addEventListener("change", async (e) => {
+    try {
+      await db.collection("usuarios").doc(uid).update({
+        recibirMailsCanjes: e.target.checked
+      });
+      alert("Preferencia actualizada.");
+    } catch (err) {
+      console.error(err);
+      alert("Error al guardar preferencia.");
+      e.target.checked = !e.target.checked; // revertir si falló
+    }
+  });
 }
+
 
 async function renderAdminCanjes() {
   // PENDIENTES
@@ -761,6 +794,13 @@ async function canjear() {
 
   // 4) Avisar al webhook de n8n (fuera de la transacción)
   try {
+    // Buscar admins con recibirMailsCanjes == true
+    const adminsSnap = await db.collection("usuarios")
+      .where("admin", "==", true)
+      .where("recibirMailsCanjes", "==", true)
+      .get();
+    const adminEmails = adminsSnap.docs.map(d => d.data().email).filter(Boolean);
+
     await fetch("https://alanvt.app.n8n.cloud/webhook/ee8c2d7e-7bcc-4013-8492-cd884b40924f", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -768,11 +808,12 @@ async function canjear() {
         type: "canje_pendiente",
         canjeId,
         userId: uid,
-        email: auth.currentUser?.email || "",
+        emailUsuario: auth.currentUser?.email || "",
         premioId,
         premioNombre,
         puntos: valor,
-        fechaISO: new Date().toISOString()
+        fechaISO: new Date().toISOString(),
+        notificarA: adminEmails
       })
     });
   } catch (e) {
