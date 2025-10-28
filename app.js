@@ -685,11 +685,11 @@ function viewUserHome(uid) {
 async function canjear() {
   const sel = document.getElementById("premios");
   if (!sel || !sel.value) return alert("Elegí un premio.");
-  const uid = auth.currentUser.uid;
 
+  const uid = auth.currentUser.uid;
   const premioId = sel.value;
 
-  // 1) Intentar obtener el premio desde Firestore (preferido)
+  // 1) Obtener premio desde Firestore
   let premioNombre, valor;
   try {
     const premioDoc = await db.collection("premios").doc(premioId).get();
@@ -698,70 +698,91 @@ async function canjear() {
     premioNombre = (p?.nombre ?? "").toString().trim();
     valor        = parseInt(p?.valor, 10);
   } catch {
-    // 2) Fallback al <option> por si hay cortes de red o similar
+    // fallback si algo falla
     const opt = sel.options[sel.selectedIndex];
-    const nameFromData = (opt?.dataset?.nombre ?? "").toString().trim();
-    const nameFromText = (opt?.textContent ?? "").split("—")[0].trim();
-    const valFromData  = parseInt(opt?.dataset?.valor, 10);
-
-    premioNombre = nameFromData || nameFromText || premioId; // <-- nunca undefined
-    valor = Number.isFinite(valFromData) ? valFromData : NaN;
+    premioNombre = (opt?.dataset?.nombre || opt?.textContent || premioId).trim();
+    valor = parseInt(opt?.dataset?.valor || "0", 10);
   }
 
-  if (!premioNombre) premioNombre = premioId;      // última red
-  if (!Number.isFinite(valor) || valor <= 0) {
-    return alert("Valor del premio inválido.");
-  }
+  if (!premioNombre) return alert("Error: premio sin nombre.");
+  if (!Number.isFinite(valor) || valor <= 0) return alert("Valor del premio inválido.");
 
-  // 3) Validar saldo
+  // 2) Verificar saldo actual
   const userRef = db.collection("usuarios").doc(uid);
   const userSnap = await userRef.get();
   const saldo = userSnap.data()?.saldo ?? 0;
   if (saldo < valor) return alert("Puntos insuficientes.");
 
-  const hoy = new Date().toISOString().slice(0,10);
+  const ahora = firebase.firestore.Timestamp.now();
 
-  // 4) Transacción: descuenta saldo + movimiento + canje pendiente
+  // 3) Transacción: descuento y registro
+  let canjeId = null;
   try {
     await db.runTransaction(async (tx) => {
       const uSnap = await tx.get(userRef);
       const saldoActual = uSnap.data()?.saldo ?? 0;
       if (saldoActual < valor) throw new Error("Saldo insuficiente al confirmar.");
 
-      // actualizar saldo
+      // descontar puntos
       tx.update(userRef, { saldo: saldoActual - valor });
 
       // movimiento
       const movRef = db.collection("movimientos").doc();
       tx.set(movRef, {
         empleado: uid,
-        fecha: tsToLocalString(nowTs()),
+        fecha: ahora,
         concepto: `Canje: ${premioNombre}`,
-        millas: -valor
+        puntos: -valor   // mantiene compatibilidad, si querés seguí usando 'millas' en base
       });
 
-      // canje pendiente (sin undefined)
+      // canje pendiente
       const canjeRef = db.collection("canjes").doc();
+      canjeId = canjeRef.id;
       tx.set(canjeRef, {
         userId: uid,
-        email: (uSnap.data()?.email || ""),
+        email: (uSnap.data()?.email || auth.currentUser.email || ""),
         premioId,
-        premioNombre,     // <-- ya garantizado string no vacío
+        premioNombre,
         valor,
-        fecha: tsToLocalString(nowTs()),
+        fecha: ahora,
         estado: "pendiente",
         entregadoPor: null,
-        entregadoAt: null
+        entregadoAt: null,
+        notificado: false
       });
     });
 
-    alert("Canje realizado: quedó PENDIENTE de entrega.");
-    viewUserPendientes(uid);
+    alert("Canje realizado: quedó pendiente de entrega.");
   } catch (e) {
     console.error(e);
     alert("No se pudo realizar el canje: " + (e.message || e));
+    return;
   }
+
+  // 4) Avisar al webhook de n8n (fuera de la transacción)
+  try {
+    await fetch("https://alanvt.app.n8n.cloud/webhook/ee8c2d7e-7bcc-4013-8492-cd884b40924f", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "canje_pendiente",
+        canjeId,
+        userId: uid,
+        email: auth.currentUser?.email || "",
+        premioId,
+        premioNombre,
+        puntos: valor,
+        fechaISO: new Date().toISOString()
+      })
+    });
+  } catch (e) {
+    console.warn("No se pudo notificar a n8n:", e);
+  }
+
+  // 5) Redirigir a vista de pendientes
+  viewUserPendientes(uid);
 }
+
 
 async function viewUserCanjear(uid) {
 
