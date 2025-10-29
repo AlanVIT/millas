@@ -763,7 +763,7 @@ async function canjear() {
       const movRef = db.collection("movimientos").doc();
       tx.set(movRef, {
         empleado: uid,
-        fecha: ahora,
+        fecha: tsToLocalString(nowTs()),
         concepto: `Canje: ${premioNombre}`,
         puntos: -valor   // mantiene compatibilidad, si querés seguí usando 'millas' en base
       });
@@ -777,7 +777,7 @@ async function canjear() {
         premioId,
         premioNombre,
         valor,
-        fecha: ahora,
+        fecha: tsToLocalString(nowTs()),
         estado: "pendiente",
         entregadoPor: null,
         entregadoAt: null,
