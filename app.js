@@ -33,12 +33,15 @@ function viewLogin() {
       <input id="login-email" placeholder="Email" autocomplete="username">
       <input id="login-pass" type="password" placeholder="Contraseña" autocomplete="current-password">
       <button id="btn-login">Ingresar</button>
+      <p><a href="#" id="link-forgot">¿Olvidaste tu contraseña?</a></p>
       <p>¿No tenés cuenta? <a href="#" id="link-register">Registrate aquí</a></p>
     </div>
   `);
   document.getElementById("btn-login").onclick = login;
+  const lf = document.getElementById("link-forgot");
+  if (lf) lf.onclick = (e)=>{ e.preventDefault(); forgotPassword(); };
   document.getElementById("link-register").onclick = (e)=>{e.preventDefault(); viewRegister();};
-}
+} 
 
 function viewRegister() {
   render(`
@@ -708,12 +711,13 @@ function viewUserHome(uid) {
       <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:16px 0;">
         <button onclick="viewUserCanjear('${uid}')">Canje de premios</button>
         <button onclick="viewUserPendientes('${uid}')">Mis canjes pendientes</button>
+        <button onclick="sendResetToCurrentUser()">Cambiar contraseña</button>
       </div>
       <hr>
       <button onclick="logout()">Cerrar sesión</button>
     </div>
   `);
-}
+} 
 
 async function canjear() {
   const sel = document.getElementById("premios");
@@ -1199,6 +1203,38 @@ async function register() {
   } catch (e) {
     console.error(e);
     alert("Error en registro: " + (e.code || e.message));
+  }
+}
+
+// Enviar email de restablecimiento desde login
+async function forgotPassword() {
+  let email = (document.getElementById("login-email")?.value || "").trim();
+  if (!email) {
+    email = prompt("Ingresá tu email para recuperar la contraseña:");
+    if (!email) return;
+  }
+  try {
+    await auth.sendPasswordResetEmail(email);
+    alert("Se envió un email para restablecer la contraseña. Revisa tu casilla de correo.");
+  } catch (e) {
+    console.error(e);
+    alert("No se pudo enviar el email: " + (e.message || e.code || e));
+  }
+}
+
+// Enviar email de restablecimiento al usuario actual (desde su panel)
+async function sendResetToCurrentUser() {
+  const user = auth.currentUser;
+  if (!user) return alert("No estás autenticado.");
+  const email = user.email;
+  if (!email) return alert("Tu cuenta no tiene asociado un email.");
+  if (!confirm(`Se enviará un email de cambio de contraseña a ${email}. Continuar?`)) return;
+  try {
+    await auth.sendPasswordResetEmail(email);
+    alert("Email enviado correctamente. Revisa tu bandeja de entrada.");
+  } catch (e) {
+    console.error(e);
+    alert("No se pudo enviar el email: " + (e.message || e.code || e));
   }
 }
 
