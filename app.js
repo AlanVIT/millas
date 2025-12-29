@@ -106,6 +106,28 @@ async function viewAdminMenu() {
   });
 }
 
+function parseTuFormato(fechaStr) {
+    if (!fechaStr) return new Date(0);
+    // Si está en ISO (contiene 'T') o ya es parseable por Date
+    if (typeof fechaStr === 'string' && fechaStr.includes('T')) {
+      return new Date(fechaStr);
+    }
+    const [fecha, hora] = (fechaStr || "").split(' '); // Separa fecha y hora
+    const [dia, mes, anio] = (fecha || "").split('/'); // Separa día, mes, año
+    if (!dia || !mes || !anio) return new Date(fechaStr); // fallback seguro
+    // Convertimos DD/MM/YYYY a MM/DD/YYYY para JS
+    return new Date(`${mes}/${dia}/${anio} ${hora || ''}`);
+}
+
+function fechaToMs(f) {
+  if (!f) return 0;
+  if (typeof f.toDate === 'function') return f.toDate().getTime();
+  const d = parseTuFormato(f);
+  const t = d && typeof d.getTime === 'function' ? d.getTime() : NaN;
+  return isNaN(t) ? 0 : t;
+}
+
+
 
 async function renderAdminCanjes() {
   // PENDIENTES
@@ -127,6 +149,23 @@ async function renderAdminCanjes() {
   } catch {
     histSnap = await db.collection("canjes").where("estado","==","entregado").get();
   }
+
+  // Construir arrays para poder ordenar (fallback si Firestore no soportó orderBy)
+  let pendientes = [];
+  pendSnap.forEach(d => pendientes.push({ id: d.id, data: d.data() }));
+  pendientes.sort((a, b) => {
+    const fechaA = parseTuFormato(a.data.fecha);
+    const fechaB = parseTuFormato(b.data.fecha);
+    return fechaB - fechaA;
+  });
+
+  let historial = [];
+  histSnap.forEach(d => historial.push({ id: d.id, data: d.data() }));
+  historial.sort((a, b) => {
+    const fechaA = parseTuFormato(a.data.fecha);
+    const fechaB = parseTuFormato(b.data.fecha);
+    return fechaB - fechaA;
+  });
 
   const rowPend = (id, c) => `
     <tr>
@@ -154,10 +193,10 @@ async function renderAdminCanjes() {
   `;
 
   let rowsPend = "";
-  pendSnap.forEach(d => rowsPend += rowPend(d.id, d.data()));
+  pendientes.forEach(d => rowsPend += rowPend(d.id, d.data));
 
   let rowsHist = "";
-  histSnap.forEach(d => rowsHist += rowHist(d.id, d.data()));
+  historial.forEach(h => rowsHist += rowHist(h.id, h.data));
 
   render(`
     <div class="container">
@@ -477,8 +516,10 @@ async function verMovs(uidObjetivo) {
   }
 
   let html = "<h4>Movimientos</h4>";
-  movsSnap.forEach(d=>{
-    const m = d.data();
+  const movsArr = [];
+  movsSnap.forEach(d => movsArr.push(d.data()));
+  movsArr.sort((a, b) => fechaToMs(b.fecha) - fechaToMs(a.fecha));
+  movsArr.forEach(m => {
     html += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> Puntos</p>`;
   });
   document.getElementById("movs-detalle").innerHTML = html || "<i>Sin movimientos</i>";
@@ -677,8 +718,10 @@ async function viewUser(uid) {
   }
 
   let movsHTML = "";
-  movsSnap.forEach(d=>{
-    const m = d.data();
+  const movsArr = [];
+  movsSnap.forEach(d => movsArr.push(d.data()));
+  movsArr.sort((a, b) => fechaToMs(b.fecha) - fechaToMs(a.fecha));
+  movsArr.forEach(m => {
     movsHTML += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> Puntos</p>`;
   });
 
@@ -846,8 +889,10 @@ async function viewUserCanjear(uid) {
       .orderBy("fecha","desc")
       .onSnapshot(snap => {
         let movsHTML = "";
-        snap.forEach(d => {
-          const m = d.data();
+        const movsArrSnapshot = [];
+        snap.forEach(d => movsArrSnapshot.push(d.data()));
+        movsArrSnapshot.sort((a, b) => fechaToMs(b.fecha) - fechaToMs(a.fecha));
+        movsArrSnapshot.forEach(m => {
           movsHTML += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> Puntos</p>`;
         });
         const cont = document.getElementById("movimientos");
@@ -857,6 +902,17 @@ async function viewUserCanjear(uid) {
     movsSnap = await db.collection("movimientos")
       .where("empleado","==",uid)
       .get();
+  }
+
+  // Si usamos la versión sin onSnapshot, construí movsHTML para el render inicial
+  let movsHTML = "";
+  if (movsSnap) {
+    const movsArrFallback = [];
+    movsSnap.forEach(d => movsArrFallback.push(d.data()));
+    movsArrFallback.sort((a, b) => fechaToMs(b.fecha) - fechaToMs(a.fecha));
+    movsArrFallback.forEach(m => {
+      movsHTML += `<p>${tsToLocalString(m.fecha)} — ${m.concepto}: <b>${m.millas}</b> Puntos</p>`;
+    });
   }
 
     const premiosSnap = await db.collection("premios").orderBy("nombre").get();
